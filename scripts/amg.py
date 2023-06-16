@@ -12,6 +12,8 @@ import argparse
 import json
 import os
 from typing import Any, Dict, List
+import cv2
+import numpy as np
 
 parser = argparse.ArgumentParser(
     description=(
@@ -61,6 +63,12 @@ parser.add_argument(
         "Save masks as COCO RLEs in a single json instead of as a folder of PNGs. "
         "Requires pycocotools."
     ),
+)
+
+parser.add_argument(
+    "--save_visualization",
+    action="store_true",
+    help="Save a visualization of the masks on top of the input image instead of the masks.",
 )
 
 amg_settings = parser.add_argument_group("AMG Settings")
@@ -192,6 +200,25 @@ def get_amg_kwargs(args):
     return amg_kwargs
 
 
+def visualize_anns(anns, alpha=0.35):
+    if len(anns) == 0:
+        return
+    sorted_anns = sorted(anns, key=(lambda x: x["area"]), reverse=True)
+    img = np.ones(
+        (
+            sorted_anns[0]["segmentation"].shape[0],
+            sorted_anns[0]["segmentation"].shape[1],
+            4,
+        )
+    )
+    img[:, :, 3] = 0
+    for ann in sorted_anns:
+        m = ann["segmentation"]
+        color_mask = np.concatenate([np.random.random(3), [alpha]])
+        img[m] = color_mask
+    return img
+
+
 def main(args: argparse.Namespace) -> None:
     print("Loading model...")
     sam = sam_model_registry[args.model_type](checkpoint=args.checkpoint)
@@ -223,13 +250,28 @@ def main(args: argparse.Namespace) -> None:
         base = os.path.basename(t)
         base = os.path.splitext(base)[0]
         save_base = os.path.join(args.output, base)
-        if output_mode == "binary_mask":
-            os.makedirs(save_base, exist_ok=False)
-            write_masks_to_folder(masks, save_base)
+
+        if args.save_visualization:
+            alpha = 0.35
+            ann_img = visualize_anns(masks, alpha)
+            image = image / 255
+            blend_image = ann_img[..., :3] * ann_img[..., 3:] + image * (1 - ann_img[..., 3:])
+            ann_img[..., 3] /= alpha
+            for save_suffix, save_image in zip(["", "_ann", "_input"], [blend_image, ann_img, image]):
+                save_file = save_base + save_suffix + ".png"
+                print(f"Saving {save_file}...")
+                save_image = cv2.cvtColor((save_image[..., :3] * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+                cv2.imwrite(save_file, save_image)
+
         else:
-            save_file = save_base + ".json"
-            with open(save_file, "w") as f:
-                json.dump(masks, f)
+            if output_mode == "binary_mask":
+                os.makedirs(save_base, exist_ok=False)
+                write_masks_to_folder(masks, save_base)
+            else:
+                save_file = save_base + ".json"
+                with open(save_file, "w") as f:
+                    json.dump(masks, f)
+
     print("Done!")
 
 
